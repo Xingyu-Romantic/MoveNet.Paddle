@@ -1,105 +1,33 @@
-# Movenet.Pytorch
+# MoveNet
 
-[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/fire717/Fire/blob/main/LICENSE)
+Google提供的在线演示：[https://storage.googleapis.com/tfjs-models/demos/pose-detection/index.html?model=movenet](https://storage.googleapis.com/tfjs-models/demos/pose-detection/index.html?model=movenet)
 
-## Intro
-![start](/data/imgs/three_pane_aligned.gif)
+MoveNet 是一个 Bottom-up estimation model， 使用heatmap。
 
-MoveNet is an ultra fast and accurate model that detects 17 keypoints of a body.
-This is A Pytorch implementation of MoveNet from Google. Include training code and pre-train model.
+## 网络架构
+主要分为三个部分：Backbone、Header、PostProcess
+- Backbone：Mobilenetv2 + FPN
+- Header：输入为Backbone的特征图，经过各自的卷积，输出各自维度的特征图。共有四个Header：分别为Center、KeypointRegression、KeypointHeatmap、Local Offsets
+	- Center：[N, 1, H, W], 这里1代表当前图像上所有人中心点的Heatmap，可以理解为关键点，只有一个，所以通道为1。提取中心点两种方式：
+		- 一个人所有关键点的算术平均数。
+		- 所有关键点最大外接矩形的中心点。（效果更好）
+	- KeypointHeatmap：[N, K, H, W]  N：Batchsize、K：关键点数量，比如17。H、W：对应特征图的大小，这里输入为$192 \times 192$ , 降采样四倍就是$48\times 48$ 。代表当前图像上所有人的关键点的Heatmap
+	- KeypointRegresssion：[N, 2K, H, W]  K个关键点，坐标用$x, y$表示，那么就有2K个数据。这里$x, y$ 代表的是同一个人的关键点对于中心点的偏移值。原始MoveNet用的是特征图下的绝对偏移值，换成相对值（除以48转换到0-1），可以加快收敛。
+	- LocalOffsets：[N, 2K, H, W] 对应K个关键点的坐标，这里是Offset，模型降采样特征图可能存在量化误差，比如192分辨率下x = 0 和 x= 3映射到48分辨率的特征图时坐标都变为了0；同时还有回归误差。
 
-Google just release pre-train models(tfjs or tflite), which cannot be converted to some CPU inference framework such as NCNN,Tengine,MNN,TNN, and we can not add our own custom data to finetune, so there is this repo.
-
-
-## How To Run
-
-1.Download COCO dataset2017 from https://cocodataset.org/. (You need train2017.zip, val2017.zip and annotations.)Unzip to `movenet.pytorch/data/` like this:
-
-```
-├── data
-    ├── annotations (person_keypoints_train2017.json, person_keypoints_val2017.json, ...)
-    ├── train2017   (xx.jpg, xx.jpg,...)
-    └── val2017     (xx.jpg, xx.jpg,...)
-
-```
-
-
-2.Make data to our data format.
-```
-python scripts/make_coco_data_17keypooints.py
-```
-```
-Our data format: JSON file
-Keypoints order:['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 
-    'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 
-    'right_wrist', 'left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 
-    'right_ankle']
-
-One item:
-[{"img_name": "0.jpg",
-  "keypoints": [x0,y0,z0,x1,y1,z1,...],
-  #z: 0 for no label, 1 for labeled but invisible, 2 for labeled and visible
-  "center": [x,y],
-  "bbox":[x0,y0,x1,y1],
-  "other_centers": [[x0,y0],[x1,y1],...],
-  "other_keypoints": [[[x0,y0],[x1,y1],...],[[x0,y0],[x1,y1],...],...], #lenth = num_keypoints
- },
- ...
-]
-```
-
-3.You can add your own data to the same format.
-
-4.After putting data at right place, you can start training
-```
-python train.py
-```
-
-5.After training finished, you need to change the test model path to test. Such as this in predict.py
-```
-run_task.modelLoad("output/xxx.pth")
+## 损失函数
+KeypointHeadmap 和 Center 采用加权MSE，平衡了正负样本。
+KeypointRegression 和LocalOffsets 采用了 L1 Loss。
+最终各个Loss权重设置为1:1:1:1
+```python
+loss = paddle.pow((pre-target),2) weight_mask = target*k+1
+paddle.pow(torch.abs(target-pre), 2) loss = loss*weight_mask
 ```
 
 
-6.run predict to show predict result, or run evaluate.py to compute my acc on test dataset.
-```
-python predict.py
-```
-7.Convert to onnx.
-```
-python pth2onnx.py
-```
 
-## Training Results
+## 参考文献
+1. [2021轻量级人体姿态估计模型修炼之路（附谷歌MoveNet复现经验） - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/413313925)
+2. [fire717/movenet.pytorch: A Pytorch implementation of MoveNet from Google. Include training code and pre-train model. (github.com)](https://github.com/fire717/movenet.pytorch)
+3. https://storage.googleapis.com/tfjs-models/demos/pose-detection/index.html?model=movenet
 
-#### Some good samples
-![good](/data/imgs/good.png)
-
-#### Some bad cases
-![bad](/data/imgs/bad.png)
-
-
-## Tips to improve
-#### 1. Focus on data
-* Add COCO2014. (But as I know it has some duplicate data of COCO2017, and I don't know if google use it.)
-* Clean the croped COCO2017 data. (Some img just have little points, such as big face, big body,etc.MoveNet is a small network, COCO data is a little hard for it.)
-* Add some yoga, fitness, and dance videos frame from YouTube. (Highly Recommened! Cause Google did this on their Movenet and said 'Evaluations on the Active validation dataset show a significant performance boost relative to identical architectures trained using only COCO. ')
-
-#### 2. Change backbone
-Try to ransfer Mobilenetv2(original Movenet) to Mobilenetv3 or Shufflenetv2 may get a litte improvement.If you just wanna reproduce the original Movenet, u can ignore this.
-
-#### 3. More fancy loss
-Surely this is a muti-task learning. So add some loss to learn together may improve the performence. (Such as BoneLoss which I have added.) And we can never know how Google trained, cause we cannot see it from the pre-train tflite model file, so you can try any loss function you like.
-
-
-#### 4. Data Again
-I just wanna you know the importance of the data. The more time you spend on clean data and add new data, the better performance your model will get! (While tips 2 and 3 may not.)
-
-## Resource
-1. [Blog:Next-Generation Pose Detection with MoveNet and TensorFlow.js](https://blog.tensorflow.org/2021/05/next-generation-pose-detection-with-movenet-and-tensorflowjs.html
-)
-2. [model card](https://storage.googleapis.com/movenet/MoveNet.SinglePose%20Model%20Card.pdf)
-3. [TFHub：movenet/singlepose/lightning
-](https://tfhub.dev/google/movenet/singlepose/lightning/4
-)
-4. [My article share: 2021轻量级人体姿态估计模型修炼之路（附谷歌MoveNet复现经验）](https://zhuanlan.zhihu.com/p/413313925)
